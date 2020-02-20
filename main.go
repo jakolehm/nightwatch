@@ -114,7 +114,7 @@ func main() {
 						if !ok {
 							return
 						}
-						logrus.Warnf("error:", err)
+						logrus.Warnf("error: %s", err.Error())
 					}
 				}
 			}()
