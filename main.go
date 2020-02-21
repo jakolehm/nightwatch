@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"syscall"
 
@@ -51,89 +52,19 @@ func main() {
 			}
 			defer watcher.Close()
 
+			done := make(chan os.Signal, 1)
+			signal.Notify(done, os.Interrupt)
 			var cmd *exec.Cmd
 			cmdSignal := make(chan *processSignal, 1)
-			go func() {
-				for {
-					running := true
-					cmd = exec.Command(c.Args().First(), c.Args().Slice()[1:]...)
-					cmd.Env = os.Environ()
-					stdoutPipe, _ := cmd.StdoutPipe()
-					stderrPipe, _ := cmd.StderrPipe()
-					err = cmd.Start()
-					if err != nil {
-						logrus.Fatal(err.Error())
-					}
-					go func() {
-						io.Copy(os.Stdout, stdoutPipe)
-					}()
-					go func() {
-						io.Copy(os.Stderr, stderrPipe)
-					}()
-					go func() {
-						signal := <-cmdSignal
-						if !running {
-							return
-						}
-						logrus.Debugf("got signal %+v", signal)
-						if signal.exitProcess {
-							running = false
-						}
-						cmd.Process.Signal(signal.signal)
-						cmd.Wait()
-					}()
-					logrus.Debugln("process started")
-					cmd.Wait()
-					logrus.Debugln("process killed")
-					if !running {
-						os.Exit(cmd.ProcessState.ExitCode())
-						break
-					}
-				}
-			}()
+			go runCommand(cmd, c.Args(), cmdSignal)
+			go handleWatchEvents(watcher, cmdSignal, c.Bool("dir"))
 
-			done := make(chan bool)
-			go func() {
-				for {
-					select {
-					case event, ok := <-watcher.Events:
-						if !ok {
-							return
-						}
-						if event.Op == fsnotify.Write {
-							logrus.Debugf("modified file: %s", event.Name)
-							if err != nil {
-								return
-							}
-							cmdSignal <- &processSignal{signal: syscall.SIGTERM, exitProcess: false}
-						} else if event.Op == fsnotify.Create && c.Bool("dir") {
-							logrus.Debugf("created: %s", event.Name)
-							cmdSignal <- &processSignal{signal: syscall.SIGTERM, exitProcess: true}
-						}
-					case err, ok := <-watcher.Errors:
-						if !ok {
-							return
-						}
-						logrus.Warnf("error: %s", err.Error())
-					}
-				}
-			}()
+			startFileWatch(watcher)
 
-			scanner := bufio.NewScanner(os.Stdin)
-			for scanner.Scan() {
-				file := scanner.Text()
-				absFile, err := filepath.Abs(file)
-				if err == nil {
-					err = watcher.Add(absFile)
-					if err != nil {
-						logrus.Warningf("failed to watch file %s", absFile)
-					}
-				}
-			}
-
-			<-done
+			exitSignal := <-done
 			if cmd != nil {
-				cmd.Process.Signal(syscall.SIGTERM)
+				cmdSignal <- &processSignal{signal: exitSignal, exitProcess: true}
+				cmd.Wait()
 			}
 
 			return nil
@@ -153,5 +84,81 @@ func main() {
 	err := app.Run(os.Args)
 	if err != nil {
 		log.Fatal(err)
+	}
+}
+
+func startFileWatch(watcher *fsnotify.Watcher) {
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		file := scanner.Text()
+		absFile, err := filepath.Abs(file)
+		if err == nil {
+			err = watcher.Add(absFile)
+			if err != nil {
+				logrus.Warningf("failed to watch file %s", absFile)
+			}
+		}
+	}
+}
+
+func handleWatchEvents(watcher *fsnotify.Watcher, cmdSignal chan *processSignal, watchDirs bool) {
+	for {
+		select {
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return
+			}
+			if event.Op == fsnotify.Write {
+				logrus.Debugf("modified file: %s", event.Name)
+				cmdSignal <- &processSignal{signal: syscall.SIGTERM, exitProcess: false}
+			} else if event.Op == fsnotify.Create && watchDirs {
+				logrus.Debugf("created: %s", event.Name)
+				cmdSignal <- &processSignal{signal: syscall.SIGTERM, exitProcess: true}
+			}
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			logrus.Warnf("error: %s", err.Error())
+		}
+	}
+}
+
+func runCommand(cmd *exec.Cmd, args cli.Args, cmdSignal chan *processSignal) {
+	for {
+		running := true
+		cmd = exec.Command(args.First(), args.Slice()[1:]...)
+		cmd.Env = os.Environ()
+		stdoutPipe, _ := cmd.StdoutPipe()
+		stderrPipe, _ := cmd.StderrPipe()
+		err := cmd.Start()
+		if err != nil {
+			logrus.Fatal(err.Error())
+		}
+		go func() {
+			io.Copy(os.Stdout, stdoutPipe)
+		}()
+		go func() {
+			io.Copy(os.Stderr, stderrPipe)
+		}()
+		go func() {
+			signal := <-cmdSignal
+			if !running {
+				return
+			}
+			logrus.Debugf("got signal %+v", signal)
+			if signal.exitProcess {
+				running = false
+			}
+			cmd.Process.Signal(signal.signal)
+			cmd.Wait()
+		}()
+		logrus.Debugln("process started")
+		cmd.Wait()
+		logrus.Debugln("process killed")
+		if !running {
+			os.Exit(cmd.ProcessState.ExitCode())
+			break
+		}
 	}
 }
