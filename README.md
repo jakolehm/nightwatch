@@ -2,7 +2,7 @@
 
 Nightwatch is a command line tool to easily handle events on file system modifications.
 
-![nightwatch](./nightwatch.jpg)
+<img src="./nightwatch.jpg" width="300">
 
 ## Build
 
