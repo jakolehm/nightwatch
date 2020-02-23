@@ -43,6 +43,7 @@ steps:
       password:
         from_secret: dockerhub_token
       repo: jakolehm/nightwatch-amd64
+      auto_tag: true
       build_args:
         - binary=nightwatch_linux_amd64
   - name: docker_arm64
@@ -52,5 +53,6 @@ steps:
       password:
         from_secret: dockerhub_token
       repo: jakolehm/nightwatch-arm64
+      auto_tag: true
       build_args:
         - binary=nightwatch_linux_arm64
