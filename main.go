@@ -56,7 +56,7 @@ func main() {
 			signal.Notify(done, os.Interrupt)
 			var cmd *exec.Cmd
 			cmdSignal := make(chan *processSignal, 1)
-			go runCommand(cmd, c.Args(), cmdSignal)
+			go runCommand(cmd, c, cmdSignal)
 			go handleWatchEvents(watcher, cmdSignal, c.Bool("dir"))
 
 			startFileWatch(watcher)
@@ -78,6 +78,10 @@ func main() {
 				Name:    "dir",
 				Aliases: []string{"d"},
 				Usage:   "Track the directories of regular files provided as input and exit if a new file is added.",
+			},
+			&cli.IntFlag{
+				Name:  "exit-on-change",
+				Usage: "Exit on file change with a given code.",
 			},
 		},
 	}
@@ -134,9 +138,10 @@ func handleWatchEvents(watcher *fsnotify.Watcher, cmdSignal chan *processSignal,
 	}
 }
 
-func runCommand(cmd *exec.Cmd, args cli.Args, cmdSignal chan *processSignal) {
+func runCommand(cmd *exec.Cmd, c *cli.Context, cmdSignal chan *processSignal) {
 	for {
 		running := true
+		args := c.Args()
 		cmd = exec.Command(args.First(), args.Slice()[1:]...)
 		cmd.Env = os.Environ()
 		stdoutPipe, _ := cmd.StdoutPipe()
@@ -157,7 +162,7 @@ func runCommand(cmd *exec.Cmd, args cli.Args, cmdSignal chan *processSignal) {
 				return
 			}
 			logrus.Debugf("got signal %+v", signal)
-			if signal.exitProcess {
+			if signal.exitProcess || c.IsSet("exit-on-change") {
 				running = false
 			}
 			cmd.Process.Signal(signal.signal)
@@ -167,6 +172,11 @@ func runCommand(cmd *exec.Cmd, args cli.Args, cmdSignal chan *processSignal) {
 		cmd.Wait()
 		logrus.Debugln("process killed")
 		if !running {
+			if c.IsSet("exit-on-change") {
+				os.Exit(c.Int("exit-on-change"))
+			} else {
+				os.Exit(cmd.ProcessState.ExitCode())
+			}
 			os.Exit(cmd.ProcessState.ExitCode())
 			break
 		}
