@@ -75,8 +75,9 @@ func main() {
 				Usage: "Debug logging.",
 			},
 			&cli.BoolFlag{
-				Name:  "dir,d",
-				Usage: "Track the directories of regular files provided as input and exit if a new file is added.",
+				Name:    "dir",
+				Aliases: []string{"d"},
+				Usage:   "Track the directories of regular files provided as input and exit if a new file is added.",
 			},
 		},
 	}
@@ -108,12 +109,21 @@ func handleWatchEvents(watcher *fsnotify.Watcher, cmdSignal chan *processSignal,
 			if !ok {
 				return
 			}
+			var signal *processSignal
 			if event.Op == fsnotify.Write {
 				logrus.Debugf("modified file: %s", event.Name)
-				cmdSignal <- &processSignal{signal: syscall.SIGTERM, exitProcess: false}
+				signal = &processSignal{signal: syscall.SIGTERM, exitProcess: false}
 			} else if event.Op == fsnotify.Create && watchDirs {
 				logrus.Debugf("created: %s", event.Name)
-				cmdSignal <- &processSignal{signal: syscall.SIGTERM, exitProcess: true}
+				signal = &processSignal{signal: syscall.SIGTERM, exitProcess: true}
+			}
+			if signal == nil {
+				return
+			}
+			select {
+			case cmdSignal <- signal:
+			default:
+				logrus.Debugln("restart already scheduled, ignoring change.")
 			}
 		case err, ok := <-watcher.Errors:
 			if !ok {
