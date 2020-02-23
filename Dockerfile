@@ -2,4 +2,4 @@ FROM scratch
 
 ARG binary
 
-ADD ./output/$binary /nightwatch
+COPY ./output/$binary /nightwatch
