@@ -110,7 +110,7 @@ func handleWatchEvents(watcher *fsnotify.Watcher, cmdSignal chan *processSignal,
 				return
 			}
 			var signal *processSignal
-			if event.Op == fsnotify.Write {
+			if event.Op == fsnotify.Write || event.Op == fsnotify.Chmod {
 				logrus.Debugf("modified file: %s", event.Name)
 				signal = &processSignal{signal: syscall.SIGTERM, exitProcess: false}
 			} else if event.Op == fsnotify.Create && watchDirs {
