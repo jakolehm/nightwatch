@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/sirupsen/logrus"
@@ -19,11 +20,6 @@ import (
 var (
 	Version = "dev"
 )
-
-type processSignal struct {
-	signal      os.Signal
-	exitProcess bool
-}
 
 func init() {
 	logrus.SetOutput(os.Stdout)
@@ -52,21 +48,23 @@ func main() {
 			}
 			defer watcher.Close()
 
-			done := make(chan os.Signal, 1)
-			signal.Notify(done, os.Interrupt)
-			var cmd *exec.Cmd
-			cmdSignal := make(chan *processSignal, 1)
-			go runCommand(cmd, c, cmdSignal)
-			go handleWatchEvents(watcher, cmdSignal, c.Bool("dir"))
+			done := make(chan os.Signal, 2)
+			signal.Notify(done, os.Interrupt, syscall.SIGTERM)
 
+			nightWatch := &NightWatch{
+				cmdSignal:    make(chan *processSignal, 1),
+				args:         c.Args(),
+				watcher:      watcher,
+				exitOnChange: c.Int("exit-on-change"),
+				watchDirs:    c.Bool("dir"),
+			}
+			nightWatch.Run()
 			startFileWatch(watcher)
 
 			exitSignal := <-done
-			if cmd != nil {
-				cmdSignal <- &processSignal{signal: exitSignal, exitProcess: true}
-				cmd.Wait()
-			}
-
+			exitCode := nightWatch.Stop(exitSignal)
+			time.Sleep(10 * time.Second)
+			os.Exit(exitCode)
 			return nil
 		},
 		Flags: []cli.Flag{
@@ -82,6 +80,7 @@ func main() {
 			&cli.IntFlag{
 				Name:  "exit-on-change",
 				Usage: "Exit on file change with a given code.",
+				Value: 255,
 			},
 		},
 	}
@@ -106,30 +105,62 @@ func startFileWatch(watcher *fsnotify.Watcher) {
 	}
 }
 
-func handleWatchEvents(watcher *fsnotify.Watcher, cmdSignal chan *processSignal, watchDirs bool) {
+type processSignal struct {
+	signal os.Signal
+}
+
+type NightWatch struct {
+	cmd          *exec.Cmd
+	args         cli.Args
+	cmdSignal    chan *processSignal
+	watcher      *fsnotify.Watcher
+	exitOnChange int
+	watchDirs    bool
+}
+
+func (n *NightWatch) Run() {
+	go n.handleWatchEvents()
+	go n.runCommand()
+}
+
+func (n *NightWatch) Stop(exitSignal os.Signal) int {
+	if n.cmd == nil {
+		return 0
+	}
+	if n.cmd.ProcessState != nil && n.cmd.ProcessState.Exited() {
+		return n.cmd.ProcessState.ExitCode()
+	}
+
+	logrus.Debugf("stop requested: %s", exitSignal)
+	n.cmdSignal <- &processSignal{signal: exitSignal}
+	n.cmd.Wait()
+	return n.cmd.ProcessState.ExitCode()
+}
+
+func (n *NightWatch) handleWatchEvents() {
 	for {
 		select {
-		case event, ok := <-watcher.Events:
+		case event, ok := <-n.watcher.Events:
 			if !ok {
 				return
 			}
 			var signal *processSignal
 			if event.Op == fsnotify.Write || event.Op == fsnotify.Chmod {
 				logrus.Debugf("modified file: %s", event.Name)
-				signal = &processSignal{signal: syscall.SIGTERM, exitProcess: false}
-			} else if event.Op == fsnotify.Create && watchDirs {
+				signal = &processSignal{signal: syscall.SIGTERM}
+			} else if event.Op == fsnotify.Create && n.watchDirs {
 				logrus.Debugf("created: %s", event.Name)
-				signal = &processSignal{signal: syscall.SIGTERM, exitProcess: true}
+				signal = &processSignal{signal: syscall.SIGTERM}
 			}
 			if signal == nil {
 				return
 			}
 			select {
-			case cmdSignal <- signal:
+			case n.cmdSignal <- signal:
 			default:
 				logrus.Debugln("restart already scheduled, ignoring change.")
 			}
-		case err, ok := <-watcher.Errors:
+		case err, ok := <-n.watcher.Errors:
 			if !ok {
 				return
 			}
@@ -138,15 +169,17 @@ func handleWatchEvents(watcher *fsnotify.Watcher, cmdSignal chan *processSignal,
 	}
 }
 
-func runCommand(cmd *exec.Cmd, c *cli.Context, cmdSignal chan *processSignal) {
+func (n *NightWatch) runCommand() {
 	for {
-		running := true
-		args := c.Args()
-		cmd = exec.Command(args.First(), args.Slice()[1:]...)
-		cmd.Env = os.Environ()
-		stdoutPipe, _ := cmd.StdoutPipe()
-		stderrPipe, _ := cmd.StderrPipe()
-		err := cmd.Start()
+		changeDetected := false
+		n.cmd = exec.Command(n.args.First(), n.args.Slice()[1:]...)
+		n.cmd.Env = os.Environ()
+		stdoutPipe, _ := n.cmd.StdoutPipe()
+		stderrPipe, _ := n.cmd.StderrPipe()
+		defer stdoutPipe.Close()
+		defer stderrPipe.Close()
+
+		err := n.cmd.Start()
 		if err != nil {
 			logrus.Fatal(err.Error())
 		}
@@ -157,28 +190,20 @@ func runCommand(cmd *exec.Cmd, c *cli.Context, cmdSignal chan *processSignal) {
 			io.Copy(os.Stderr, stderrPipe)
 		}()
 		go func() {
-			signal := <-cmdSignal
-			if !running {
-				return
-			}
+			signal := <-n.cmdSignal
+			changeDetected = true
 			logrus.Debugf("got signal %+v", signal)
-			if signal.exitProcess || c.IsSet("exit-on-change") {
-				running = false
-			}
-			cmd.Process.Signal(signal.signal)
-			cmd.Wait()
+			n.cmd.Process.Signal(signal.signal)
+			n.cmd.Wait()
 		}()
 		logrus.Debugln("process started")
-		cmd.Wait()
+		n.cmd.Wait()
 		logrus.Debugln("process killed")
-		if !running {
-			if c.IsSet("exit-on-change") {
-				os.Exit(c.Int("exit-on-change"))
-			} else {
-				os.Exit(cmd.ProcessState.ExitCode())
-			}
-			os.Exit(cmd.ProcessState.ExitCode())
-			break
+		if changeDetected {
+			os.Exit(n.exitOnChange)
+		} else if n.cmd.ProcessState.ExitCode() == 0 {
+			os.Exit(0)
 		}
+		time.Sleep(500 * time.Millisecond)
 	}
 }
