@@ -146,10 +146,14 @@ func (n *NightWatch) handleWatchEvents() {
 			}
 			var signal *processSignal
 			if event.Op == fsnotify.Write || event.Op == fsnotify.Chmod {
-				logrus.Debugf("modified file: %s", event.Name)
+				logrus.Debugf("modified: %s", event.Name)
 				signal = &processSignal{signal: syscall.SIGTERM}
 			} else if event.Op == fsnotify.Create && n.watchDirs {
 				logrus.Debugf("created: %s", event.Name)
+				signal = &processSignal{signal: syscall.SIGTERM}
+			} else if event.Op == fsnotify.Remove {
+				logrus.Debugf("removed: %s", event.Name)
+				n.watcher.Remove(event.Name)
 				signal = &processSignal{signal: syscall.SIGTERM}
 			}
 			if signal == nil {
