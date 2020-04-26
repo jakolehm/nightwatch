@@ -42,24 +42,25 @@ func main() {
 			if !c.Args().Present() {
 				logrus.Fatal("No command specified")
 			}
-			watcher, err := fsnotify.NewWatcher()
-			if err != nil {
-				logrus.Fatal(err)
-			}
-			defer watcher.Close()
 
 			done := make(chan os.Signal, 2)
 			signal.Notify(done, os.Interrupt, syscall.SIGTERM)
 
-			nightWatch := &NightWatch{
-				cmdSignal:    make(chan *processSignal, 1),
-				args:         c.Args(),
-				watcher:      watcher,
-				exitOnChange: c.Int("exit-on-change"),
-				watchDirs:    c.Bool("dir"),
+			exitOnChange := -1
+			if c.IsSet("exit-on-change") {
+				exitOnChange = c.Int("exit-on-change")
 			}
-			nightWatch.Run()
-			startFileWatch(watcher)
+
+			nightWatch := &NightWatch{
+				cmdSignal:     make(chan *processSignal, 1),
+				args:          c.Args(),
+				watchDirs:     c.Bool("dir"),
+				exitOnChange:  exitOnChange,
+				exitOnError:   c.Bool("exit-on-error"),
+				exitOnSuccess: c.Bool("exit-on-success"),
+				watchCmd:      c.String("find-cmd"),
+			}
+			go nightWatch.Run()
 
 			exitSignal := <-done
 			exitCode := nightWatch.Stop(exitSignal)
@@ -75,12 +76,25 @@ func main() {
 			&cli.BoolFlag{
 				Name:    "dir",
 				Aliases: []string{"d"},
-				Usage:   "Track the directories of regular files provided as input and exit if a new file is added.",
+				Usage:   "Track the directories of regular files returned from --find-cmd",
+				Value:   true,
+			},
+			&cli.StringFlag{
+				Name:  "find-cmd",
+				Usage: "Command to list files to watch",
+				Value: "find .",
+			},
+			&cli.IntFlag{
+				Name:  "exit-on-error",
+				Usage: "Exit if process returns an error code.",
+			},
+			&cli.IntFlag{
+				Name:  "exit-on-success",
+				Usage: "Exit if process returns with code 0.",
 			},
 			&cli.IntFlag{
 				Name:  "exit-on-change",
 				Usage: "Exit on file change with a given code.",
-				Value: 255,
 			},
 		},
 	}
@@ -91,39 +105,38 @@ func main() {
 	}
 }
 
-func startFileWatch(watcher *fsnotify.Watcher) {
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		file := scanner.Text()
-		absFile, err := filepath.Abs(file)
-		if err == nil {
-			err = watcher.Add(absFile)
-			if err != nil {
-				logrus.Warningf("failed to watch file %s", absFile)
-			}
-		}
-	}
-}
-
 type processSignal struct {
 	signal os.Signal
 }
 
 type NightWatch struct {
-	cmd          *exec.Cmd
-	args         cli.Args
-	cmdSignal    chan *processSignal
-	watcher      *fsnotify.Watcher
-	exitOnChange int
-	watchDirs    bool
+	cmd           *exec.Cmd
+	watchCmd      string
+	args          cli.Args
+	cmdSignal     chan *processSignal
+	watcher       *fsnotify.Watcher
+	exitOnChange  int
+	exitOnError   bool
+	exitOnSuccess bool
+	watchDirs     bool
+	stopped       bool
 }
 
 func (n *NightWatch) Run() {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		logrus.Fatal(err)
+	}
+	n.watcher = watcher
+	defer n.watcher.Close()
+
+	n.reloadWatch()
 	go n.handleWatchEvents()
-	go n.runCommand()
+	n.runCommand()
 }
 
 func (n *NightWatch) Stop(exitSignal os.Signal) int {
+	n.stopped = true
 	if n.cmd == nil {
 		return 0
 	}
@@ -173,6 +186,57 @@ func (n *NightWatch) handleWatchEvents() {
 	}
 }
 
+func (n *NightWatch) reloadWatch() {
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell, _ = exec.LookPath("sh")
+	}
+	cmd := exec.Command(shell, "-c", n.watchCmd)
+	cmd.Env = os.Environ()
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		logrus.Errorln(err)
+		os.Exit(1)
+		return
+	}
+	cmd.Start()
+	watchedPaths := []string{}
+	scanner := bufio.NewScanner(stdoutPipe)
+	for scanner.Scan() {
+		file := scanner.Text()
+		absFile, err := filepath.Abs(file)
+		if err == nil {
+			fileInfo, _ := os.Stat(absFile)
+			shouldWatch := true
+			for _, path := range watchedPaths {
+				var dirName string
+				if fileInfo.IsDir() {
+					dirName = absFile
+				} else {
+					dirName = filepath.Dir(absFile)
+				}
+				if dirName == path || (!n.watchDirs && fileInfo.IsDir()) {
+					shouldWatch = false
+				}
+			}
+			if shouldWatch {
+				logrus.Debugf("watching file %s", absFile)
+				err = n.watcher.Add(absFile)
+				if err != nil {
+					logrus.Warningf("failed to watch file %s: %s", absFile, err.Error())
+					os.Exit(1)
+				} else if fileInfo.IsDir() {
+					watchedPaths = append(watchedPaths, absFile)
+				}
+			}
+		}
+	}
+	cmd.Wait()
+	if cmd.ProcessState.ExitCode() != 0 {
+		os.Exit(cmd.ProcessState.ExitCode())
+	}
+}
+
 func (n *NightWatch) runCommand() {
 	for {
 		changeDetected := false
@@ -180,8 +244,14 @@ func (n *NightWatch) runCommand() {
 		n.cmd.Env = os.Environ()
 		stdoutPipe, _ := n.cmd.StdoutPipe()
 		stderrPipe, _ := n.cmd.StderrPipe()
-		defer stdoutPipe.Close()
-		defer stderrPipe.Close()
+		defer func() {
+			if stdoutPipe != nil {
+				stdoutPipe.Close()
+			}
+			if stderrPipe != nil {
+				stderrPipe.Close()
+			}
+		}()
 
 		err := n.cmd.Start()
 		if err != nil {
@@ -203,11 +273,23 @@ func (n *NightWatch) runCommand() {
 		logrus.Debugln("process started")
 		n.cmd.Wait()
 		logrus.Debugln("process killed")
+
+		exitCode := n.cmd.ProcessState.ExitCode()
+		if n.stopped {
+			os.Exit(exitCode)
+		}
 		if changeDetected {
-			os.Exit(n.exitOnChange)
-		} else if n.cmd.ProcessState.ExitCode() == 0 {
-			os.Exit(0)
+			if n.exitOnChange > -1 {
+				os.Exit(n.exitOnChange)
+			}
+		} else {
+			if n.exitOnError && exitCode > 0 {
+				os.Exit(exitCode)
+			} else if n.exitOnSuccess && exitCode == 0 {
+				os.Exit(exitCode)
+			}
 		}
 		time.Sleep(500 * time.Millisecond)
+		n.Run()
 	}
 }
