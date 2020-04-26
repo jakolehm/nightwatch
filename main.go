@@ -122,7 +122,16 @@ func (n *NightWatch) Run() {
 	n.watcher = watcher
 	defer n.watcher.Close()
 
-	n.reloadWatch()
+	files := []string{}
+	stat, _ := os.Stdin.Stat()
+	if (stat.Mode() & os.ModeCharDevice) == 0 {
+		logrus.Debugln("reading files from stdin")
+		files = n.watchFromStdin()
+	} else {
+		logrus.Debugf("Reading files from command: %s", n.watchCmd)
+		files = n.watchFromCmd()
+	}
+	n.watchFiles(files)
 	go n.handleWatchEvents()
 	n.runCommand()
 }
@@ -178,7 +187,18 @@ func (n *NightWatch) handleWatchEvents() {
 	}
 }
 
-func (n *NightWatch) reloadWatch() {
+func (n *NightWatch) watchFromStdin() []string {
+	files := []string{}
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		file := scanner.Text()
+		files = append(files, file)
+	}
+
+	return files
+}
+
+func (n *NightWatch) watchFromCmd() []string {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell, _ = exec.LookPath("sh")
@@ -189,13 +209,25 @@ func (n *NightWatch) reloadWatch() {
 	if err != nil {
 		logrus.Errorln(err)
 		os.Exit(1)
-		return
 	}
 	cmd.Start()
-	watchedPaths := []string{}
+	files := []string{}
 	scanner := bufio.NewScanner(stdoutPipe)
 	for scanner.Scan() {
 		file := scanner.Text()
+		files = append(files, file)
+	}
+	cmd.Wait()
+	if cmd.ProcessState.ExitCode() != 0 {
+		os.Exit(cmd.ProcessState.ExitCode())
+	}
+
+	return files
+}
+
+func (n *NightWatch) watchFiles(files []string) {
+	watchedPaths := []string{}
+	for _, file := range files {
 		absFile, err := filepath.Abs(file)
 		if err == nil {
 			fileInfo, _ := os.Stat(absFile)
@@ -222,10 +254,6 @@ func (n *NightWatch) reloadWatch() {
 				}
 			}
 		}
-	}
-	cmd.Wait()
-	if cmd.ProcessState.ExitCode() != 0 {
-		os.Exit(cmd.ProcessState.ExitCode())
 	}
 }
 
