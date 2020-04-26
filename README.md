@@ -6,7 +6,7 @@ Nightwatch is a command line tool to easily handle events on file system modific
 
 ## Download & Docker
 
-Download `nightwatch` from [releases](https://github.com/jakolehm/nightwatch/releases) page. Linux (amd64, arm64, armhf), and MacOS are supported.
+Download `nightwatch` from [releases](https://github.com/jakolehm/nightwatch/releases) page. Linux (amd64, arm64, armhf), MacOS and Windows are supported.
 
 
 COPY for Dockerfile:
