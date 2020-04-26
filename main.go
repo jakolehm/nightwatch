@@ -51,7 +51,10 @@ func main() {
 			if c.IsSet("exit-on-change") {
 				exitOnChange = c.Int("exit-on-change")
 			}
-
+			filesList := []string{}
+			if c.IsSet("files") {
+				filesList = strings.Split(c.String("files"), ",")
+			}
 			nightWatch := &NightWatch{
 				cmdSignal:     make(chan *processSignal, 1),
 				args:          c.Args(),
@@ -59,7 +62,7 @@ func main() {
 				exitOnError:   c.Bool("exit-on-error"),
 				exitOnSuccess: c.Bool("exit-on-success"),
 				watchCmd:      c.String("find-cmd"),
-				filesList:     strings.Split(c.String("files"), ","),
+				filesList:     filesList,
 			}
 			go nightWatch.Run()
 
@@ -135,6 +138,7 @@ func (n *NightWatch) Run() {
 		logrus.Debugln("reading files from stdin")
 		files = n.watchFromStdin()
 	} else if len(n.filesList) > 0 {
+		logrus.Debugf("Reading files from static list: %s", strings.Join(n.filesList, ", "))
 		files = n.filesList
 	} else {
 		logrus.Debugf("Reading files from command: %s", n.watchCmd)
