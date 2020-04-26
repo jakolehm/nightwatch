@@ -44,3 +44,19 @@ $ find *.js | nightwatch node app.js
 ```
 $ make build
 ```
+
+
+## Testing
+
+```
+cd examples/bash
+nightwatch --debug simple.sh
+```
+
+## Testing with docker-compose
+
+```
+cd examples
+docker-compose build
+docker-compose run example nightwatch --debug bash/simple.sh
+```
