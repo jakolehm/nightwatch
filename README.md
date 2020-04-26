@@ -20,8 +20,23 @@ COPY --from=jakolehm/nightwatch-arm64:1.0 /nightwatch /usr/bin
 
 ## Example Usage
 
+
+#### Using `--find-cmd`:
+
 ```
 $ nightwatch --find-cmd "find *.js" node app.js
+```
+
+#### Using `--files`:
+
+```
+$ nightwatch --files "package.json,src/" node app.js
+```
+
+#### Via `STDIN`:
+
+```
+$ find *.js | nightwatch node app.js
 ```
 
 ## Building From Source

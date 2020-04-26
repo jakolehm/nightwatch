@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -58,6 +59,7 @@ func main() {
 				exitOnError:   c.Bool("exit-on-error"),
 				exitOnSuccess: c.Bool("exit-on-success"),
 				watchCmd:      c.String("find-cmd"),
+				filesList:     strings.Split(c.String("files"), ","),
 			}
 			go nightWatch.Run()
 
@@ -74,8 +76,12 @@ func main() {
 			},
 			&cli.StringFlag{
 				Name:  "find-cmd",
-				Usage: "Command to list files to watch",
+				Usage: "Command to list files (or dirs) to watch",
 				Value: "find . -type f",
+			},
+			&cli.StringFlag{
+				Name:  "files",
+				Usage: "Files (or dirs) to watch (comma separated list)",
 			},
 			&cli.IntFlag{
 				Name:  "exit-on-error",
@@ -105,6 +111,7 @@ type processSignal struct {
 type NightWatch struct {
 	cmd           *exec.Cmd
 	watchCmd      string
+	filesList     []string
 	args          cli.Args
 	cmdSignal     chan *processSignal
 	watcher       *fsnotify.Watcher
@@ -127,6 +134,8 @@ func (n *NightWatch) Run() {
 	if (stat.Mode() & os.ModeCharDevice) == 0 {
 		logrus.Debugln("reading files from stdin")
 		files = n.watchFromStdin()
+	} else if len(n.filesList) > 0 {
+		files = n.filesList
 	} else {
 		logrus.Debugf("Reading files from command: %s", n.watchCmd)
 		files = n.watchFromCmd()
