@@ -54,7 +54,6 @@ func main() {
 			nightWatch := &NightWatch{
 				cmdSignal:     make(chan *processSignal, 1),
 				args:          c.Args(),
-				watchDirs:     c.Bool("dir"),
 				exitOnChange:  exitOnChange,
 				exitOnError:   c.Bool("exit-on-error"),
 				exitOnSuccess: c.Bool("exit-on-success"),
@@ -73,16 +72,10 @@ func main() {
 				Name:  "debug",
 				Usage: "Debug logging.",
 			},
-			&cli.BoolFlag{
-				Name:    "dir",
-				Aliases: []string{"d"},
-				Usage:   "Track the directories of regular files returned from --find-cmd",
-				Value:   true,
-			},
 			&cli.StringFlag{
 				Name:  "find-cmd",
 				Usage: "Command to list files to watch",
-				Value: "find .",
+				Value: "find . -type f",
 			},
 			&cli.IntFlag{
 				Name:  "exit-on-error",
@@ -118,7 +111,6 @@ type NightWatch struct {
 	exitOnChange  int
 	exitOnError   bool
 	exitOnSuccess bool
-	watchDirs     bool
 	stopped       bool
 }
 
@@ -161,7 +153,7 @@ func (n *NightWatch) handleWatchEvents() {
 			if event.Op == fsnotify.Write || event.Op == fsnotify.Chmod {
 				logrus.Debugf("modified: %s", event.Name)
 				signal = &processSignal{signal: syscall.SIGTERM}
-			} else if event.Op == fsnotify.Create && n.watchDirs {
+			} else if event.Op == fsnotify.Create {
 				logrus.Debugf("created: %s", event.Name)
 				signal = &processSignal{signal: syscall.SIGTERM}
 			} else if event.Op == fsnotify.Remove {
@@ -215,7 +207,7 @@ func (n *NightWatch) reloadWatch() {
 				} else {
 					dirName = filepath.Dir(absFile)
 				}
-				if dirName == path || (!n.watchDirs && fileInfo.IsDir()) {
+				if dirName == path {
 					shouldWatch = false
 				}
 			}
@@ -290,6 +282,5 @@ func (n *NightWatch) runCommand() {
 			}
 		}
 		time.Sleep(500 * time.Millisecond)
-		n.Run()
 	}
 }
