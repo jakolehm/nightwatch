@@ -69,6 +69,7 @@ func main() {
 			exitSignal := <-done
 			exitCode := nightWatch.Stop(exitSignal)
 			time.Sleep(10 * time.Second)
+			nightWatch.Cleanup()
 			os.Exit(exitCode)
 			return nil
 		},
@@ -125,12 +126,12 @@ type NightWatch struct {
 }
 
 func (n *NightWatch) Run() {
+	n.cmdSignal = make(chan *processSignal, 1)
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		logrus.Fatal(err)
 	}
 	n.watcher = watcher
-	defer n.watcher.Close()
 
 	files := []string{}
 	stat, _ := os.Stdin.Stat()
@@ -164,6 +165,12 @@ func (n *NightWatch) Stop(exitSignal os.Signal) int {
 	return n.cmd.ProcessState.ExitCode()
 }
 
+func (n *NightWatch) Cleanup() {
+	if n.watcher != nil {
+		n.watcher.Close()
+	}
+}
+
 func (n *NightWatch) handleWatchEvents() {
 	for {
 		select {
@@ -173,7 +180,7 @@ func (n *NightWatch) handleWatchEvents() {
 			}
 			var signal *processSignal
 			if event.Op == fsnotify.Write || event.Op == fsnotify.Chmod {
-				logrus.Debugf("modified: %s", event.Name)
+				logrus.Debugf("modified (%s): %s", event.Op.String(), event.Name)
 				signal = &processSignal{signal: syscall.SIGTERM}
 			} else if event.Op == fsnotify.Create {
 				logrus.Debugf("created: %s", event.Name)
@@ -223,6 +230,11 @@ func (n *NightWatch) watchFromCmd() []string {
 		logrus.Errorln(err)
 		os.Exit(1)
 	}
+	defer func() {
+		if stdoutPipe != nil {
+			stdoutPipe.Close()
+		}
+	}()
 	cmd.Start()
 	files := []string{}
 	scanner := bufio.NewScanner(stdoutPipe)
@@ -271,8 +283,23 @@ func (n *NightWatch) watchFiles(files []string) {
 }
 
 func (n *NightWatch) runCommand() {
+	changeDetected := false
+	go func() {
+		for {
+			signal := <-n.cmdSignal
+			if changeDetected {
+				continue
+			}
+			changeDetected = true
+			logrus.Debugf("got signal %+v", signal)
+			if n.cmd != nil {
+				n.cmd.Process.Signal(signal.signal)
+				n.cmd.Wait()
+			}
+		}
+	}()
 	for {
-		changeDetected := false
+		changeDetected = false
 		n.cmd = exec.Command(n.args.First(), n.args.Slice()[1:]...)
 		n.cmd.Env = os.Environ()
 		stdoutPipe, _ := n.cmd.StdoutPipe()
@@ -296,16 +323,9 @@ func (n *NightWatch) runCommand() {
 		go func() {
 			io.Copy(os.Stderr, stderrPipe)
 		}()
-		go func() {
-			signal := <-n.cmdSignal
-			changeDetected = true
-			logrus.Debugf("got signal %+v", signal)
-			n.cmd.Process.Signal(signal.signal)
-			n.cmd.Wait()
-		}()
-		logrus.Debugln("process started")
+		logrus.Debugf("process (pid: %d) started", n.cmd.Process.Pid)
 		n.cmd.Wait()
-		logrus.Debugln("process killed")
+		logrus.Debugf("process (pid: %d) killed", n.cmd.Process.Pid)
 
 		exitCode := n.cmd.ProcessState.ExitCode()
 		if n.stopped {
