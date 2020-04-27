@@ -80,7 +80,7 @@ func main() {
 			&cli.StringFlag{
 				Name:  "find-cmd",
 				Usage: "Command to list files (or dirs) to watch",
-				Value: "find . -type f",
+				Value: "find . -type f -not -path '*/\\.git/*'",
 			},
 			&cli.StringFlag{
 				Name:  "files",
