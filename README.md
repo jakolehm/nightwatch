@@ -11,11 +11,11 @@ Download `nightwatch` from [releases](https://github.com/jakolehm/nightwatch/rel
 
 COPY for Dockerfile:
 ```
-COPY --from=jakolehm/nightwatch-amd64:1.1 /nightwatch /usr/bin
+COPY --from=jakolehm/nightwatch-amd64:1.3 /nightwatch /usr/bin
 ```
 or
 ```
-COPY --from=jakolehm/nightwatch-arm64:1.1 /nightwatch /usr/bin
+COPY --from=jakolehm/nightwatch-arm64:1.3 /nightwatch /usr/bin
 ```
 
 ## Example Usage
