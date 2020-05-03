@@ -1,6 +1,17 @@
 version: "3.7"
 
 services:
+  nightwatch:
+    build:
+      context: ..
+      dockerfile: examples/Dockerfile
+    image: nightwatch
+
+  go-gin-gonic:
+    build: go-gin-gonic
+    volumes:
+      - ./go-gin-gonic:/app
+
   example:
     build: .
     volumes:

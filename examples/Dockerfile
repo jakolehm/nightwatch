@@ -1,8 +1,10 @@
-FROM jakolehm/nightwatch-amd64:1.1 as nightwatch
+FROM golang:1.13.10-alpine3.11 as builder
 
-FROM alpine:3.11
+WORKDIR /build
+COPY . .
 
-RUN apk add --no-cache \
-  bash
+RUN go build
 
-COPY --from=nightwatch /nightwatch /usr/bin
+FROM scratch
+
+COPY --from=builder /build/nightwatch /nightwatch
